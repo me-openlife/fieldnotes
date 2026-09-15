@@ -26,3 +26,7 @@ Concrete counterexamples and reproduction results are especially useful. Open an
 3. the claim, responsibility boundary, or implementation behavior that should change.
 
 This is a field notebook, not an authority. Revisions remain visible in Git history.
+
+## License
+
+Repository contents are available under the [MIT License](LICENSE). Notes retain their stated authorship and provenance when reused.
