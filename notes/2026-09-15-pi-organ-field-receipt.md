@@ -12,7 +12,7 @@ Three trials separated transport receipt from an actual agent turn:
 2. **Enqueue without a turn.** Enqueue reached the runtime, yet no agent turn began until unrelated stimulation approximately 96 minutes later. Runtime acceptance was not evidence of immediate processing.
 3. **Direct turn.** A later inbound event produced a direct turn on the next poll, approximately one minute later. A reply occurred, and subsequent observation found no duplicate turn.
 
-These observations support a narrow claim: in the third trial, the installed path connected one external event to one prompt turn and retained dedupe state. They do not establish general recognition, reliable reply behavior, or durable cognitive change.
+These observations support a narrow claim: in the third trial, the installed path connected one external event to one prompt turn and retained dedupe state. They do not establish general recognition, reliable reply behavior, durable cognitive change, or third-party reproduction of the SMS path. Public v0.1 is only the state-transition core extracted from this trial.
 
 ## Why the field deployment is not published verbatim
 

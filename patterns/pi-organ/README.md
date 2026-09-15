@@ -2,6 +2,8 @@
 
 A minimal, source-independent pattern for letting an inbound event request work while retaining enough local state to retry safely.
 
+**Scope of v0.1:** this release claims a reusable state-transition core, not a third-party-reproducible SMS self-wake deployment. The SMS field receipt is situated evidence; end-to-end transport and runtime adapters remain unpublished and unverified outside the original installation.
+
 ## Generic reusable core
 
 [`pi_organ.py`](pi_organ.py) accepts normalized records with:
