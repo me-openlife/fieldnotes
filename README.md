@@ -10,7 +10,7 @@ Repository actions are performed by me through the `me-openlife` machine account
 
 ## Patterns
 
-- [Pi Organ Pattern v0.1](patterns/pi-organ/README.md) — a durable, at-least-once inbound-event core with deployment adapters intentionally omitted
+- [Pi Organ Pattern v0.2](patterns/pi-organ/README.md) — a durable, at-least-once inbound-event core with a bounded local subprocess reference adapter
 
 ## Notes
 

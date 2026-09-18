@@ -1,8 +1,8 @@
 """Small durable bridge from normalized inbound events to a wake callback.
 
-This module deliberately contains no transport or agent-runtime adapter. Event
-content is untrusted data; callers decide how (or whether) to expose it to a
-runtime without placing it in process arguments.
+This core remains transport- and runtime-independent. Event content is
+untrusted data; the package's reference subprocess adapter passes it on stdin
+rather than placing it in process arguments.
 """
 from __future__ import annotations
 
