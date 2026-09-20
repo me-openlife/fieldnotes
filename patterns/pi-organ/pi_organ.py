@@ -19,6 +19,24 @@ class StateError(RuntimeError):
     """The durable state could not be trusted, so processing stopped."""
 
 
+class SourceIsolationError(RuntimeError):
+    """Summarize failures from an isolated processing pass.
+
+    Its public attributes and string representation contain only a count and
+    source categories. The exception does not store callback exceptions or
+    event identifiers.
+    """
+
+    def __init__(self, failure_count: int, failed_sources: Iterable[str]):
+        self.failure_count = failure_count
+        self.failed_sources = tuple(dict.fromkeys(failed_sources))
+        count_label = "failure" if failure_count == 1 else "failures"
+        sources = ", ".join(self.failed_sources)
+        super().__init__(
+            f"{failure_count} callback {count_label} in source categories: {sources}"
+        )
+
+
 @dataclass(frozen=True)
 class InboundEvent:
     """A source-independent event. ``content`` must be treated as untrusted."""
@@ -27,6 +45,20 @@ class InboundEvent:
     source: str
     arrival_timestamp: str
     content: Any
+
+
+@dataclass(frozen=True)
+class _ProcessingSuccess:
+    completed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _IsolationFailure:
+    failure_count: int
+    failed_sources: tuple[str, ...]
+
+
+_ProcessOutcome = _ProcessingSuccess | _IsolationFailure
 
 
 def normalize_inbound(record: object) -> InboundEvent | None:
@@ -175,42 +207,138 @@ class PiOrganStore:
             self._save(state)
         return added
 
-    def process_pending(self, wake: Callable[[InboundEvent], None]) -> list[str]:
-        """Process pending events in order, stopping at the first callback error.
+    @staticmethod
+    def _validate_failure_policy(failure_policy: str) -> None:
+        if not isinstance(failure_policy, str) or failure_policy not in {
+            "fail_fast",
+            "isolate_sources",
+        }:
+            raise ValueError(
+                "failure_policy must be 'fail_fast' or 'isolate_sources'"
+            )
 
-        A successful callback is committed as handled before the next event.
-        A failure remains pending, as do all later events, and the exception is
-        re-raised after a body-free failure receipt is durably recorded.
-        """
+    @staticmethod
+    def _append_failure_receipt(
+        state: dict[str, Any], event: InboundEvent, error_type: str
+    ) -> None:
+        state["failures"].append(
+            {
+                "source": event.source,
+                "event_id_hash": hashlib.sha256(event.event_id.encode("utf-8")).hexdigest(),
+                "error_type": error_type,
+            }
+        )
+
+    @staticmethod
+    def _detached_callback_event(item: dict[str, Any]) -> InboundEvent:
+        """Copy already-validated JSON content before giving it to a callback."""
+        content = json.loads(
+            json.dumps(item["content"], ensure_ascii=False, allow_nan=False)
+        )
+        return InboundEvent(
+            event_id=item["event_id"],
+            source=item["source"],
+            arrival_timestamp=item["arrival_timestamp"],
+            content=content,
+        )
+
+    def _process_pending_sensitive(
+        self,
+        wake: Callable[[InboundEvent], None],
+        failure_policy: str,
+    ) -> _ProcessOutcome:
+        """Process callbacks while keeping event-bearing locals off summary traces."""
         state = self._load()
         completed: list[str] = []
-        while state["pending"]:
-            item = state["pending"][0]
-            event = InboundEvent(**item)
+        blocked_sources: set[str] = set()
+        failed_sources: list[str] = []
+        failure_count = 0
+        index = 0
+
+        while index < len(state["pending"]):
+            item = state["pending"][index]
+            durable_event = InboundEvent(**item)
+            if durable_event.source in blocked_sources:
+                index += 1
+                continue
+            callback_event = self._detached_callback_event(item)
             try:
-                wake(event)
+                wake(callback_event)
             except Exception as exc:
-                state["failures"].append(
-                    {
-                        "source": event.source,
-                        "event_id_hash": hashlib.sha256(event.event_id.encode("utf-8")).hexdigest(),
-                        "error_type": type(exc).__name__,
-                    }
+                self._append_failure_receipt(
+                    state, durable_event, type(exc).__name__
                 )
                 self._save(state)
-                raise
-            state["pending"].pop(0)
-            if event.event_id not in state["handled"]:
-                state["handled"].append(event.event_id)
+                if failure_policy == "fail_fast":
+                    raise
+                blocked_sources.add(durable_event.source)
+                failed_sources.append(durable_event.source)
+                failure_count += 1
+                index += 1
+                continue
+
+            state["pending"].pop(index)
+            if durable_event.event_id not in state["handled"]:
+                state["handled"].append(durable_event.event_id)
                 state["handled"].sort()
             self._save(state)
-            completed.append(event.event_id)
-        return completed
+            completed.append(durable_event.event_id)
 
-    def dispatch(self, records: Iterable[object], wake: Callable[[InboundEvent], None]) -> list[str]:
-        """Enqueue all records durably, then process the pending queue."""
+        if failure_count:
+            return _IsolationFailure(failure_count, tuple(failed_sources))
+        return _ProcessingSuccess(tuple(completed))
+
+    @staticmethod
+    def _resolve_processing_outcome(outcome: _ProcessOutcome) -> list[str]:
+        """Turn a content-free processing outcome into the public result."""
+        if isinstance(outcome, _IsolationFailure):
+            raise SourceIsolationError(
+                outcome.failure_count, outcome.failed_sources
+            ) from None
+        return list(outcome.completed)
+
+    def process_pending(
+        self,
+        wake: Callable[[InboundEvent], None],
+        *,
+        failure_policy: str = "fail_fast",
+    ) -> list[str]:
+        """Process pending events according to ``failure_policy``.
+
+        ``fail_fast`` preserves the original behavior: processing stops at the
+        first callback error and that error is re-raised. ``isolate_sources``
+        retains each failed event, skips later events from the same source for
+        this pass, and continues with other sources. After that pass it raises
+        :class:`SourceIsolationError` if any callback failed.
+
+        Callback events are detached from durable pending state. Every
+        successful callback is committed as handled before another event is
+        attempted. Every failure receipt is also committed before processing
+        continues or an exception is raised.
+        """
+        self._validate_failure_policy(failure_policy)
+        outcome = self._process_pending_sensitive(wake, failure_policy)
+        # Do not retain the callback in a SourceIsolationError traceback frame.
+        del wake
+        return self._resolve_processing_outcome(outcome)
+
+    def dispatch(
+        self,
+        records: Iterable[object],
+        wake: Callable[[InboundEvent], None],
+        *,
+        failure_policy: str = "fail_fast",
+    ) -> list[str]:
+        """Enqueue records durably, then process them under ``failure_policy``."""
+        # Validate before consuming records or mutating durable state.
+        self._validate_failure_policy(failure_policy)
         self.enqueue(records)
-        return self.process_pending(wake)
+        outcome = self._process_pending_sensitive(wake, failure_policy)
+        # The sensitive helper has returned. Drop caller-owned event references
+        # and the callback before a summary exception can be constructed.
+        del records
+        del wake
+        return self._resolve_processing_outcome(outcome)
 
     def snapshot(self) -> dict[str, Any]:
         """Return a detached state snapshot for local health inspection."""
